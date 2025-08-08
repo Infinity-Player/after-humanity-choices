@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Progress } from "@/components/ui/progress";
+import MapCanvas from "@/components/MapCanvas";
+import { Meter } from "@/components/Meter";
 
 // Minimal seedable RNG (Mulberry32)
 function mulberry32(seed: number) {
@@ -100,22 +101,7 @@ function buildMap(seed: number): Tile[][] {
   return grid;
 }
 
-function useCssHsl(varName: string) {
-  return useMemo(() => {
-    const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-    return `hsl(${v})`;
-  }, []);
-}
 
-const Meter = ({ label, value, colorClass }: { label: string; value: number; colorClass: string }) => (
-  <div className="space-y-1">
-    <div className="flex items-center justify-between text-xs text-muted-foreground">
-      <span>{label}</span>
-      <span>{value}%</span>
-    </div>
-    <Progress className={colorClass} value={value} />
-  </div>
-);
 
 const Index = () => {
   const [seed, setSeed] = useState<WorldSeed>(generateWorldSeed());
@@ -139,42 +125,9 @@ const Index = () => {
   // Map + player
   const map = useMemo(() => buildMap(seed.worldSeed), [seed.worldSeed]);
   const [player, setPlayer] = useState({ x: 2, y: 2 });
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  
 
-  const bg = useCssHsl("--background");
-  const floor = useCssHsl("--secondary");
-  const wall = useCssHsl("--border");
-  const res = useCssHsl("--accent");
-  const term = useCssHsl("--primary");
-  const playerColor = useCssHsl("--primary-glow");
 
-  useEffect(() => {
-    const c = canvasRef.current;
-    if (!c) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, c.width, c.height);
-
-    // draw tiles
-    for (let y = 0; y < MAP_H; y++) {
-      for (let x = 0; x < MAP_W; x++) {
-        const t = map[y][x];
-        if (t === "floor") ctx.fillStyle = floor;
-        if (t === "wall") ctx.fillStyle = wall;
-        if (t === "resource") ctx.fillStyle = res;
-        if (t === "terminal") ctx.fillStyle = term;
-        ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE - 1, TILE_SIZE - 1);
-      }
-    }
-
-    // draw player
-    ctx.fillStyle = `hsl(${getComputedStyle(document.documentElement)
-      .getPropertyValue("--primary-glow")
-      .trim()})`;
-    ctx.fillRect(player.x * TILE_SIZE + 6, player.y * TILE_SIZE + 6, TILE_SIZE - 12, TILE_SIZE - 12);
-  }, [map, player, bg, floor, wall, res, term]);
 
   // Input
   useEffect(() => {
@@ -247,7 +200,7 @@ const Index = () => {
       <main className="container pb-20">
         {!started ? (
           <section className="grid gap-6 sm:grid-cols-2 items-start">
-            <article className="glass-panel rounded-lg p-6 animate-glow">
+            <article className="glass-panel rounded-lg p-6 animate-enter">
               <h2 className="text-xl font-semibold mb-2">World Seed</h2>
               <div className="text-sm grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
                 <div className="hud-chip">Cause: {seed.causeOfCollapse}</div>
@@ -264,14 +217,14 @@ const Index = () => {
                 <div className="hud-chip">Ammo: {seed.startingResources.ammo}</div>
               </div>
               <div className="mt-6 flex flex-wrap gap-3">
-                <Button variant="hero" size="xl" onClick={() => setStarted(true)}>
+                <Button variant="hero" size="xl" className="hover-scale" onClick={() => setStarted(true)}>
                   Start Run
                 </Button>
-                <Button variant="outline" onClick={() => setSeed(generateWorldSeed())}>Reroll Seed</Button>
+                <Button variant="outline" className="hover-scale" onClick={() => setSeed(generateWorldSeed())}>Reroll Seed</Button>
               </div>
             </article>
 
-            <aside className="glass-panel rounded-lg p-6">
+            <aside className="glass-panel rounded-lg p-6 animate-enter">
               <h2 className="text-xl font-semibold mb-2">Morality vs Survival</h2>
               <div className="space-y-4">
                 <Meter label="Morality" value={morality} colorClass="" />
@@ -284,13 +237,13 @@ const Index = () => {
           </section>
         ) : (
           <section className="grid gap-6 lg:grid-cols-[1fr_320px]">
-            <div className="glass-panel rounded-lg p-3 overflow-hidden">
-              <canvas
-                ref={canvasRef}
-                width={MAP_W * TILE_SIZE}
-                height={MAP_H * TILE_SIZE}
+            <div className="glass-panel rounded-lg p-3 overflow-hidden animate-enter">
+              <MapCanvas
+                map={map}
+                player={player}
+                tileSize={TILE_SIZE}
                 className="w-full h-auto rounded-md"
-                aria-label="Top-down city grid"
+                ariaLabel="Top-down city grid"
               />
               <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                 <div className="hud-chip">Food: {resources.food}</div>
@@ -303,13 +256,13 @@ const Index = () => {
               <p className="text-xs text-muted-foreground mt-2">Move with WASD / Arrow keys. Step on green tiles to scavenge. Terminals trigger dilemmas.</p>
             </div>
 
-            <aside className="glass-panel rounded-lg p-6 space-y-4">
+            <aside className="glass-panel rounded-lg p-6 animate-enter space-y-4">
               <h2 className="text-xl font-semibold">Status</h2>
               <Meter label="Morality" value={morality} colorClass="" />
               <Meter label="Survival" value={survival} colorClass="" />
               <div className="pt-2 flex gap-3">
-                <Button variant="outline" onClick={() => setMoralOpen(true)}>Trigger Dilemma</Button>
-                <Button variant="secondary" onClick={resetRun}>New Run</Button>
+                <Button variant="outline" className="hover-scale" onClick={() => setMoralOpen(true)}>Trigger Dilemma</Button>
+                <Button variant="secondary" className="hover-scale" onClick={resetRun}>New Run</Button>
               </div>
             </aside>
           </section>
