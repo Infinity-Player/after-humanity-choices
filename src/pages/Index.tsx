@@ -3,6 +3,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import MapCanvas from "@/components/MapCanvas";
 import { Meter } from "@/components/Meter";
+import BuildToolbar from "@/components/BuildToolbar";
+import { useToast } from "@/hooks/use-toast";
+import { BUILDING_CATALOG, BuildingId, PlacedBuilding } from "@/game/buildings";
 
 // Minimal seedable RNG (Mulberry32)
 function mulberry32(seed: number) {
@@ -112,6 +115,15 @@ const Index = () => {
   const [days, setDays] = useState(0);
   const [moralOpen, setMoralOpen] = useState(false);
 
+  // Build mode state
+  const [buildMode, setBuildMode] = useState(false);
+  const [selectedBuildingId, setSelectedBuildingId] = useState<BuildingId | null>(null);
+  const [placedBuildings, setPlacedBuildings] = useState<PlacedBuilding[]>([]);
+  const [ghost, setGhost] = useState<{ x: number; y: number } | null>(null);
+  const [rotation, setRotation] = useState<0 | 1 | 2 | 3>(0);
+
+  const { toast } = useToast();
+
   useEffect(() => {
     if (!started) return;
     const id = setInterval(() => setDays((d) => d + 1), 15000); // +1 day every 15s
@@ -125,14 +137,99 @@ const Index = () => {
   // Map + player
   const map = useMemo(() => buildMap(seed.worldSeed), [seed.worldSeed]);
   const [player, setPlayer] = useState({ x: 2, y: 2 });
-  
 
+  // Build helpers
+  const isBuildingAt = (x: number, y: number) => placedBuildings.find((b) => b.x === x && b.y === y);
+  const canPlaceAt = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return false;
+    const t = map[y][x];
+    if (t !== "floor") return false; // must be empty floor
+    if (isBuildingAt(x, y)) return false;
+    return true;
+  };
+  const placeSelectedAt = (x: number, y: number) => {
+    if (!selectedBuildingId) return;
+    const cost = BUILDING_CATALOG[selectedBuildingId].cost;
+    if (!canPlaceAt(x, y) || resources.scrap < cost) return;
+    const newB: PlacedBuilding = {
+      id: `${selectedBuildingId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      buildingId: selectedBuildingId,
+      x,
+      y,
+      rotation,
+    };
+    setPlacedBuildings((prev) => [...prev, newB]);
+    setResources((r) => ({ ...r, scrap: r.scrap - cost }));
+    toast({ title: "Built", description: `${BUILDING_CATALOG[selectedBuildingId].name} placed (-${cost} scrap)` });
+  };
+  const dismantleAt = (x: number, y: number) => {
+    const exist = isBuildingAt(x, y);
+    if (!exist) return;
+    const cost = BUILDING_CATALOG[exist.buildingId].cost;
+    const refund = Math.floor(cost * 0.5);
+    setPlacedBuildings((prev) => prev.filter((b) => b.id !== exist.id));
+    setResources((r) => ({ ...r, scrap: r.scrap + refund }));
+    toast({ title: "Dismantled", description: `Refunded ${refund} scrap` });
+  };
 
+  const handleMouseMove: React.MouseEventHandler<HTMLCanvasElement> = (e) => {
+    if (!buildMode) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const scaleX = e.currentTarget.width / rect.width;
+    const scaleY = e.currentTarget.height / rect.height;
+    const x = Math.floor(((e.clientX - rect.left) * scaleX) / TILE_SIZE);
+    const y = Math.floor(((e.clientY - rect.top) * scaleY) / TILE_SIZE);
+    setGhost({ x, y });
+  };
+  const handleCanvasClick: React.MouseEventHandler<HTMLCanvasElement> = (e) => {
+    if (!buildMode) return;
+    e.preventDefault();
+    if (!ghost) return;
+    if (selectedBuildingId) placeSelectedAt(ghost.x, ghost.y);
+  };
+  const handleContextMenu: React.MouseEventHandler<HTMLCanvasElement> = (e) => {
+    if (!buildMode) return;
+    e.preventDefault();
+    setSelectedBuildingId(null);
+  };
 
   // Input
   useEffect(() => {
     if (!started) return;
     const onKey = (e: KeyboardEvent) => {
+      // Global toggles
+      if (e.code === "KeyB") {
+        e.preventDefault();
+        setBuildMode((m) => {
+          const next = !m;
+          if (next && !selectedBuildingId) setSelectedBuildingId("wall");
+          if (!next) setGhost(null);
+          return next;
+        });
+        return;
+      }
+
+      if (buildMode) {
+        if (e.code === "Escape") {
+          e.preventDefault();
+          setBuildMode(false);
+          setGhost(null);
+          return;
+        }
+        if (e.code === "KeyR") {
+          e.preventDefault();
+          setRotation((r) => (((r + 1) % 4) as 0 | 1 | 2 | 3));
+          return;
+        }
+        if (e.code === "KeyX") {
+          e.preventDefault();
+          if (ghost) dismantleAt(ghost.x, ghost.y);
+          return;
+        }
+        // Ignore movement while in build mode
+        return;
+      }
+
       const dir: Record<string, { dx: number; dy: number }> = {
         ArrowUp: { dx: 0, dy: -1 },
         KeyW: { dx: 0, dy: -1 },
@@ -150,6 +247,7 @@ const Index = () => {
         const nx = Math.max(0, Math.min(MAP_W - 1, p.x + m.dx));
         const ny = Math.max(0, Math.min(MAP_H - 1, p.y + m.dy));
         if (map[ny][nx] === "wall") return p; // blocked
+        if (isBuildingAt(nx, ny)) return p; // building blocks
 
         // collect resource
         if (map[ny][nx] === "resource") {
@@ -165,7 +263,18 @@ const Index = () => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [map, started]);
+  }, [map, started, buildMode, ghost, selectedBuildingId, placedBuildings]);
+
+  // Daily building effects on day tick
+  useEffect(() => {
+    if (!started || days === 0) return;
+    const farms = placedBuildings.filter((b) => b.buildingId === "farm").length;
+    const rains = placedBuildings.filter((b) => b.buildingId === "raincatcher").length;
+    if (farms || rains) {
+      setResources((r) => ({ ...r, food: r.food + farms, water: r.water + rains }));
+      toast({ title: "Daily yields", description: `+${farms} food, +${rains} water from your base.` });
+    }
+  }, [days, started, placedBuildings]);
 
   const handleChoice = (share: boolean) => {
     setMoralOpen(false);
@@ -187,6 +296,11 @@ const Index = () => {
     setResources(next.startingResources);
     setDays(0);
     setPlayer({ x: 2, y: 2 });
+    setPlacedBuildings([]);
+    setBuildMode(false);
+    setSelectedBuildingId(null);
+    setGhost(null);
+    setRotation(0);
     setStarted(false);
   };
 
@@ -244,6 +358,20 @@ const Index = () => {
                 tileSize={TILE_SIZE}
                 className="w-full h-auto rounded-md"
                 ariaLabel="Top-down city grid"
+                placedBuildings={placedBuildings}
+                buildGhost={
+                  buildMode && ghost && selectedBuildingId
+                    ? {
+                        x: ghost.x,
+                        y: ghost.y,
+                        valid: canPlaceAt(ghost.x, ghost.y) && resources.scrap >= BUILDING_CATALOG[selectedBuildingId].cost,
+                        buildingId: selectedBuildingId,
+                      }
+                    : undefined
+                }
+                onMouseMove={handleMouseMove}
+                onClick={handleCanvasClick}
+                onContextMenu={handleContextMenu}
               />
               <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                 <div className="hud-chip">Food: {resources.food}</div>
@@ -264,6 +392,17 @@ const Index = () => {
                 <Button variant="outline" className="hover-scale" onClick={() => setMoralOpen(true)}>Trigger Dilemma</Button>
                 <Button variant="secondary" className="hover-scale" onClick={resetRun}>New Run</Button>
               </div>
+
+              <BuildToolbar
+                buildMode={buildMode}
+                onToggle={() => setBuildMode((m) => !m)}
+                selected={selectedBuildingId}
+                onSelect={(id) => {
+                  setSelectedBuildingId(id);
+                  if (!buildMode) setBuildMode(true);
+                }}
+                availableScrap={resources.scrap}
+              />
             </aside>
           </section>
         )}
